@@ -43,7 +43,7 @@ struct Cli {
     // Build URL
     #[arg(default_value_t = String::from("http://127.0.0.1:3000/files/APIName.php/150491277/1/DeaDJmBeefFhb00B5/getInfo"))]
     path: String,
-    #[arg(default_value_t = String::from("100"))]
+    #[arg(long)]
     product_number: String,
 
     // DB
