@@ -1,3 +1,4 @@
+// Copyright (c) 2023 Anssi Eteläniemi
 extern crate sqlite;
 
 use std::fs::{File, OpenOptions};
@@ -90,7 +91,7 @@ fn get_cursor(connection: &Connection, start_serial: i64, ticket_amount: Option<
 }
 
 fn get_cursor_with(connection: &Connection, serial_mapping: i64, start_serial: i64) -> CursorWithOwnership {
-    let query = "SELECT ID + ?, UIDTID FROM TICKET offset ?";
+    let query = "SELECT ID + ?, UIDTID FROM TICKET WHERE STATUS = \"GOOD\" offset ?";
     connection
         .prepare(query)
         .expect("Check db-path")
@@ -100,7 +101,7 @@ fn get_cursor_with(connection: &Connection, serial_mapping: i64, start_serial: i
 }
 
 fn get_cursor_with_limit(connection: &Connection, serial_mapping: i64, start_serial: i64, ticket_amount: i64) -> CursorWithOwnership {
-    let query = "SELECT ID + ?, UIDTID FROM TICKET limit ?, ?";
+    let query = "SELECT ID + ?, UIDTID FROM TICKET WHERE STATUS = \"GOOD\" limit ?, ?";
     connection
         .prepare(query)
         .expect("Check db-path")
