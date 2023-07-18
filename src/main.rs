@@ -54,8 +54,8 @@ struct Cli {
     // Options
     #[arg(long)]
     swap_uid_endianness: Option<bool>,
-    #[arg(long)]
-    ticket_amount: Option<i64>,
+    #[arg(long, default_value_t = -1)]
+    ticket_amount: i64,
     #[arg(long, default_value_t = 0)]
     serial_mapping: i64,
     #[arg(long, default_value_t = 1)]
@@ -81,23 +81,9 @@ fn make_url(sn_i64: i64, uid: &String, path: &String, pn: &String) -> String {
     url
 }
 
-fn get_cursor(connection: &Connection, start_serial: i64, ticket_amount: Option<i64>, serial_mapping: i64) -> impl Iterator<Item=sqlite::Row> + '_ {
-    let res = if ticket_amount.is_some() {
-        get_cursor_with_limit(connection, serial_mapping, start_serial, ticket_amount.unwrap())
-    } else {
-        get_cursor_with(connection, serial_mapping, start_serial)
-    };
+fn get_cursor(connection: &Connection, start_serial: i64, ticket_amount: i64, serial_mapping: i64) -> impl Iterator<Item=sqlite::Row> + '_ {
+    let res = get_cursor_with_limit(connection, serial_mapping, start_serial, ticket_amount);
     res.map(|row| row.unwrap())
-}
-
-fn get_cursor_with(connection: &Connection, serial_mapping: i64, start_serial: i64) -> CursorWithOwnership {
-    let query = "SELECT ID + ?, UIDTID FROM TICKET WHERE STATUS = \"GOOD\" offset ?";
-    connection
-        .prepare(query)
-        .expect("Check db-path")
-        .into_iter()
-        .bind((1, serial_mapping)).unwrap()
-        .bind((2,start_serial - 1)).unwrap()
 }
 
 fn get_cursor_with_limit(connection: &Connection, serial_mapping: i64, start_serial: i64, ticket_amount: i64) -> CursorWithOwnership {
