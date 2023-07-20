@@ -52,8 +52,8 @@ struct Cli {
     db_path: String,
 
     // Options
-    #[arg(long)]
-    swap_uid_endianness: Option<bool>,
+    #[arg(long,default_value_t = false)]
+    swap_uid_endianness: bool,
     #[arg(long,default_value_t = false)]
     remove_gaps: bool,
     #[arg(long, default_value_t = -1)]

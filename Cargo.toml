@@ -1,6 +1,6 @@
 [package]
 name = "encoding-fetcher"
-version = "1.5.0"
+version = "1.6.0"
 edition = "2021"
 description = "Fetch encoding from url given in parameters"
 
