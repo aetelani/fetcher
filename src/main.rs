@@ -54,9 +54,11 @@ struct Cli {
     // Options
     #[arg(long)]
     swap_uid_endianness: Option<bool>,
+    #[arg(long,default_value_t = false)]
+    remove_gaps: bool,
     #[arg(long, default_value_t = -1)]
     ticket_amount: i64,
-    #[arg(long, default_value_t = 0)]
+    #[arg(long, default_value_t = 1)]
     serial_mapping: i64,
     #[arg(long, default_value_t = 1)]
     first_serial: i64,
@@ -81,19 +83,23 @@ fn make_url(sn_i64: i64, uid: &String, path: &String, pn: &String) -> String {
     url
 }
 
-fn get_cursor(connection: &Connection, start_serial: i64, ticket_amount: i64, serial_mapping: i64) -> impl Iterator<Item=sqlite::Row> + '_ {
-    let res = get_cursor_with_limit(connection, serial_mapping, start_serial, ticket_amount);
+fn get_cursor(connection: &Connection, start_serial: i64, ticket_amount: i64, serial_mapping: i64, remove_gaps: bool) -> impl Iterator<Item=sqlite::Row> + '_ {
+    let res = get_cursor_with_limit(connection, serial_mapping, start_serial, ticket_amount, remove_gaps);
     res.map(|row| row.unwrap())
 }
 
-fn get_cursor_with_limit(connection: &Connection, serial_mapping: i64, start_serial: i64, ticket_amount: i64) -> CursorWithOwnership {
-    let query = "SELECT ID + ?, UIDTID FROM TICKET WHERE STATUS = \"GOOD\" limit ?, ?";
+fn get_cursor_with_limit(connection: &Connection, serial_mapping: i64, start_serial: i64, ticket_amount: i64, remove_gaps: bool) -> CursorWithOwnership {
+    let query = if remove_gaps {
+        "SELECT RANK () OVER ( ORDER BY id  ) + ? GAPLESS_ID, UIDTID FROM TICKET WHERE STATUS = \"GOOD\" limit ?, ?"
+    } else {
+        "SELECT ID + ?, UIDTID FROM TICKET WHERE STATUS = \"GOOD\" limit ?, ?"
+    };
     connection
         .prepare(query)
         .expect("Check db-path")
         .into_iter()
         .bind((1, serial_mapping - 1)).unwrap()
-        .bind((2,start_serial - 1)).unwrap()
+        .bind((2,start_serial + serial_mapping - 2)).unwrap()
         .bind((3,ticket_amount)).unwrap()
 }
 
@@ -149,7 +155,7 @@ async fn main() -> core::result::Result<(), ()> {
 
     // Actually open or creates so check the path in the case of table does not found
     let connection = sqlite::open(&cli.db_path).expect("Unable to open database");
-    let cursor = get_cursor(&connection, cli.first_serial, cli.ticket_amount, cli.serial_mapping);
+    let cursor = get_cursor(&connection, cli.first_serial, cli.ticket_amount, cli.serial_mapping, cli.remove_gaps);
     let now = Instant::now();
     let bodies = futures::stream::iter(cursor)
         .map(|row| {
