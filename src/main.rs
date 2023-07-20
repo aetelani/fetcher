@@ -92,7 +92,7 @@ fn get_cursor_with_limit(connection: &Connection, serial_mapping: i64, start_ser
         .prepare(query)
         .expect("Check db-path")
         .into_iter()
-        .bind((1, serial_mapping)).unwrap()
+        .bind((1, serial_mapping - 1)).unwrap()
         .bind((2,start_serial - 1)).unwrap()
         .bind((3,ticket_amount)).unwrap()
 }
