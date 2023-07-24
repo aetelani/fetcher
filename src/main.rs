@@ -5,6 +5,7 @@ use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::str::from_utf8;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::{
@@ -56,13 +57,15 @@ struct Cli {
     swap_uid_endianness: bool,
     #[arg(long,default_value_t = false)]
     remove_gaps: bool,
+    #[arg(long,default_value_t = false)]
+    reverse_input: bool,
     #[arg(long, default_value_t = -1)]
     ticket_amount: i64,
     #[arg(long, default_value_t = 1)]
     serial_mapping: i64,
     #[arg(long, default_value_t = 0)]
     skip_first_count: i64,
-    #[arg(long, default_value_t = 3)]
+    #[arg(long, default_value_t = 5)]
     retry_count: usize,
     #[arg(long, default_value_t = 3)]
     parallel: usize,
@@ -83,16 +86,22 @@ fn make_url(sn_i64: i64, uid: &String, path: &String, pn: &String) -> String {
     url
 }
 
-fn get_cursor(connection: &Connection, skip_first_count: i64, ticket_amount: i64, serial_mapping: i64, remove_gaps: bool) -> impl Iterator<Item=sqlite::Row> + '_ {
-    let res = get_cursor_with_limit(connection, serial_mapping, skip_first_count, ticket_amount, remove_gaps);
+fn get_cursor(connection: &Connection, skip_first_count: i64, ticket_amount: i64, serial_mapping: i64, remove_gaps: bool, reverse_input:bool) -> impl Iterator<Item=sqlite::Row> + '_ {
+    let res = get_cursor_with_limit(connection, serial_mapping, skip_first_count, ticket_amount, remove_gaps, reverse_input);
     res.map(|row| row.unwrap())
 }
 
-fn get_cursor_with_limit(connection: &Connection, serial_mapping: i64, skip_first_count: i64, ticket_amount: i64, remove_gaps: bool) -> CursorWithOwnership {
-    let query = if remove_gaps {
-        "SELECT RANK () OVER ( ORDER BY id  ) + ? GAPLESS_ID, UIDTID FROM TICKET WHERE STATUS = \"GOOD\" limit ?, ?"
+fn get_cursor_with_limit(connection: &Connection, serial_mapping: i64, skip_first_count: i64, ticket_amount: i64, remove_gaps: bool, reverse_input: bool) -> CursorWithOwnership {
+    let status = "GOOD";
+    let direction = if reverse_input {
+        "DESC"
     } else {
-        "SELECT ID + ?, UIDTID FROM TICKET WHERE STATUS = \"GOOD\" limit ?, ?"
+        "ASC"
+    };
+    let query = if remove_gaps {
+        format!("SELECT RANK () OVER ( ORDER BY id {direction} ) + ? GAPLESS_ID, UIDTID FROM TICKET WHERE STATUS = '{status}' limit ?, ?")
+    } else {
+        format!("SELECT ID + ?, UIDTID FROM TICKET WHERE STATUS = '{status}' ORDER BY ID {direction} limit ?, ?")
     };
     connection
         .prepare(query)
@@ -155,7 +164,7 @@ async fn main() -> core::result::Result<(), ()> {
 
     // Actually open or creates so check the path in the case of table does not found
     let connection = sqlite::open(&cli.db_path).expect("Unable to open database");
-    let cursor = get_cursor(&connection, cli.skip_first_count, cli.ticket_amount, cli.serial_mapping, cli.remove_gaps);
+    let cursor = get_cursor(&connection, cli.skip_first_count, cli.ticket_amount, cli.serial_mapping, cli.remove_gaps, cli.reverse_input);
     let now = Instant::now();
     let bodies = futures::stream::iter(cursor)
         .map(|row| {
@@ -168,29 +177,35 @@ async fn main() -> core::result::Result<(), ()> {
                     Ok(resp) => {
                         Ok((mapped_serial, resp))
                     },
-                    Err(_) => {Err(())}
+                    Err(_) => {Err(mapped_serial)}
                 }
             }
         })
         .buffered(cli.parallel);
-    let mut count = 0;
+    let mut total_count = 0;
+    static FAILED_COUNT: AtomicUsize = AtomicUsize::new(0);
     bodies
         .for_each(|resp| {
-            count += 1;
+            total_count += 1;
             async move {
                  match resp {
                     Ok((mapped_serial, response)) => {
                         let file_row = make_file_row(response).await;
                         let _ok = write_file_row(file, mapped_serial, file_row).await;
                     },
-                     Err(_) => { error!("Failed write data file entry"); },
+                     Err(mapped_serial) => {
+                         FAILED_COUNT.fetch_add(1, Ordering::SeqCst);
+                         error!("Failed write data file entry for serial: {mapped_serial}");
+                     },
                 }
             }
         }).await;
+    let failed_count = FAILED_COUNT.load(Ordering::SeqCst);
     info!(
-        "Processed {} entries took {}ms",
-        count,
-        now.elapsed().as_millis()
+        "Total entries of {} took {}ms, failed: {}",
+        total_count,
+        now.elapsed().as_millis(),
+        failed_count
     );
     return Ok(());
 }
@@ -207,7 +222,17 @@ async fn process_entry(cli: &Cli, client: &Client<HttpsConnector<HttpConnector>>
     };
     let url = make_url(mapped_serial, &uid, &cli.path, &cli.product_number);
     debug!("{:?}", url);
-    Retry::spawn(retry_strategy, || get_body_handle_err(client, &url))
+    let mut retry_counter: Option<i32> = None;
+    Retry::spawn(retry_strategy, || {
+        if let Some(mut count) = retry_counter {
+            info!("Retry {count} for {url}");
+            count += 1;
+            retry_counter.replace(count);
+        } else {
+            retry_counter = Some(1);
+        }
+        get_body_handle_err(client, &url)
+    })
         .await
 }
 
@@ -232,8 +257,7 @@ async fn get_body_handle_err(
     let result = get_body(&client, url).await;
     let status = result.status();
     if status != StatusCode::OK {
-        error!("Server returned {status}");
-        info!("Request: {:?}", result);
+        error!("Server returned: {status}: {url}");
         return Err(status);
     }
     return Ok(result);
