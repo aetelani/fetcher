@@ -6,7 +6,7 @@ use std::io::Write;
 use std::str::from_utf8;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::{
     Engine as _,
@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Result;
 use sqlite::{Connection, CursorWithOwnership, Row};
 //use tokio::stream;
-use tokio::time::Instant;
+use tokio::time::{Instant, sleep};
 use tokio_retry::Retry;
 use tokio_retry::strategy::{ExponentialBackoff, jitter};
 use tracing::{debug, error, Level};
@@ -59,6 +59,8 @@ struct Cli {
     remove_gaps: bool,
     #[arg(long,default_value_t = false)]
     reverse_input: bool,
+    #[arg(long,default_value_t = true)]
+    send_delay: bool,
     #[arg(long, default_value_t = -1)]
     ticket_amount: i64,
     #[arg(long, default_value_t = 1)]
@@ -211,7 +213,6 @@ async fn main() -> core::result::Result<(), ()> {
 }
 
 async fn process_entry(cli: &Cli, client: &Client<HttpsConnector<HttpConnector>>, row: Row, mapped_serial: i64) -> std::result::Result<Response<Body>, StatusCode> {
-    // I don't know how to give this as parameter
     let retry_strategy = ExponentialBackoff::from_millis(10)
         .map(jitter) // add jitter to delays
         .take(cli.retry_count);
@@ -231,7 +232,12 @@ async fn process_entry(cli: &Cli, client: &Client<HttpsConnector<HttpConnector>>
         } else {
             retry_counter = Some(1);
         }
-        get_body_handle_err(client, &url)
+        let mut first_delay = None;
+        if cli.send_delay {
+            let first_delay_ms = rand::random::<u64>() % 200;
+            first_delay = Some(Duration::from_millis(first_delay_ms));
+        }
+        get_body_handle_err(client, &url, first_delay)
     })
         .await
 }
@@ -253,7 +259,11 @@ fn swap_uid_endianness(uid: &str) -> String {
 async fn get_body_handle_err(
     client: &Client<HttpsConnector<HttpConnector>>,
     url: &String,
+    first_delay: Option<Duration>,
 ) -> std::result::Result<Response<Body>, StatusCode> {
+    if let Some(delay) = first_delay {
+        sleep(delay).await;
+    }
     let result = get_body(&client, url).await;
     let status = result.status();
     if status != StatusCode::OK {
@@ -301,7 +311,12 @@ fn create_data_file(product_number: &String) -> File {
 async fn get_body(client: &Client<HttpsConnector<HttpConnector>>, url: &String) -> Response<Body> {
     let result = client
         .get(url.parse().expect("Failed to parse url req"))
-        .await
-        .expect("Failed to fetch URL");
-    result
+        .await;
+    match result {
+        Ok(resp) => { resp }
+        Err(err) => {
+            error!("Failed to fetch URL: {err}");
+            Response::builder().status(StatusCode::BAD_REQUEST).body(Body::empty()).unwrap()
+        }
+    }
 }
