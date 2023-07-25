@@ -59,7 +59,7 @@ struct Cli {
     remove_gaps: bool,
     #[arg(long,default_value_t = false)]
     reverse_input: bool,
-    #[arg(long,default_value_t = true)]
+    #[arg(long,default_value_t = false)]
     send_delay: bool,
     #[arg(long, default_value_t = -1)]
     ticket_amount: i64,
@@ -67,7 +67,7 @@ struct Cli {
     serial_mapping: i64,
     #[arg(long, default_value_t = 0)]
     skip_first_count: i64,
-    #[arg(long, default_value_t = 5)]
+    #[arg(long, default_value_t = 6)]
     retry_count: usize,
     #[arg(long, default_value_t = 3)]
     parallel: usize,
@@ -225,17 +225,17 @@ async fn process_entry(cli: &Cli, client: &Client<HttpsConnector<HttpConnector>>
     debug!("{:?}", url);
     let mut retry_counter: Option<i32> = None;
     Retry::spawn(retry_strategy, || {
+        let mut first_delay = None;
         if let Some(mut count) = retry_counter {
             info!("Retry {count} for {url}");
             count += 1;
             retry_counter.replace(count);
         } else {
+            if cli.send_delay {
+                let first_delay_ms = rand::random::<u64>() % (80 * cli.parallel as u64);
+                first_delay = Some(Duration::from_millis(first_delay_ms));
+            }
             retry_counter = Some(1);
-        }
-        let mut first_delay = None;
-        if cli.send_delay {
-            let first_delay_ms = rand::random::<u64>() % 200;
-            first_delay = Some(Duration::from_millis(first_delay_ms));
         }
         get_body_handle_err(client, &url, first_delay)
     })
